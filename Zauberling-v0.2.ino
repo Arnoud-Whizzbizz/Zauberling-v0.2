@@ -1,4 +1,5 @@
-// Whizzbizz.com - Arnoud van Delden - november/december 2021
+// Zauberling version v0.2
+// Whizzbizz.com - Arnoud van Delden - november 2021 ~ februari 2022
 //
 // 'Zauberling' is build with a Arduino Pro Mini Atmega328P 5V 16Mhz board.
 // Sketch to be uploaded with FTDI FT232RL USB To TTL Serial IC Adapter Converter
@@ -9,11 +10,34 @@
 //
 #include <Adafruit_SSD1306.h>
 #include "Whizzbizz_TB6612.h" // Output lib for TB6612FNG enabling control over each output individually
-#include "ArduinoNunchuk.h"   // Test 2nd device on I2C bus only....
-ArduinoNunchuk nunchuk = ArduinoNunchuk();
 
-Adafruit_SSD1306 display(128, 64, &Wire, -1);
-      
+// Function 12 and 13 are test routines for various external I2C devices/sensors, outcomment defines if applicable 
+//#define FUNC12_NUNCHUK   // Testfunction to display I2C nunchuck values
+//#define FUNC13_COLORSENSOR // I2C color sensor TCS34725 connected
+
+#ifdef FUNC12_NUNCHUK
+  #include "ArduinoNunchuk.h"   // Test 2nd device on I2C bus only....
+  ArduinoNunchuk nunchuk = ArduinoNunchuk();
+#endif
+
+#ifdef FUNC13_COLORSENSOR
+  #include "Adafruit_TCS34725.h"
+  Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_50MS, TCS34725_GAIN_4X);
+  #define MAX_COLOR_OFFSET 10  // the maximum diff you found between readings
+  typedef struct {  // Struct to hold raw color data 
+     int red;
+     int green;
+     int blue;
+     int clr;
+  } Color;
+
+  // Default color values. Please calibrate depending on sensor circumstances...
+  Color colorRed    = {48, 23, 24, 92 };  // Red
+  Color colorGreen  = {39, 50, 33, 120 }; // Green
+  Color colorBlue   = {30, 42, 57, 126};  // Blue
+  Color colorYellow = {87, 64, 36, 185};  // Yellow
+#endif
+
 // TB6612 pins definition
 #define AIN1 2   // Buffered/inverted AIN1 = digital OUT 1
 #define AIN2 3   // Buffered/inverted AIN2 = digital OUT 2
@@ -46,22 +70,22 @@ Adafruit_SSD1306 display(128, 64, &Wire, -1);
 #define DIP3  8
 #define DIP4  9
 
-bool logging = true; // Serial logging during development...
-
+bool logging = true;          // Serial logging during development...
 int currentOutputSpeed;
 bool currentOutputDir = true; // true=forward(CW), false=backwards(CCW)
-uint16_t potValue1;     // Value read from potentiometer 1
-uint16_t potValue2;     // Value read from potentiometer 2
-uint8_t sensorTresh1;   // Analog trigger threshold value of potentiometer 1
-uint8_t sensorTresh2;   // Analog trigger threshold value of potentiometer 2
-int timeDelay;          // Smooth motor delay or pulse width of monoflop in ms
+uint16_t potValue1;           // Value read from potentiometer 1
+uint16_t potValue2;           // Value read from potentiometer 2
+uint8_t sensorTresh1;         // Analog trigger threshold value of potentiometer 1
+uint8_t sensorTresh2;         // Analog trigger threshold value of potentiometer 2
+int timeDelay;                // Smooth motor delay or pulse width of monoflop in ms
 uint8_t dipSwitches = 0;
-uint8_t trigButton;     // Reads DIP values during program to signal the trigger being pressed
-uint8_t trigMask;       // Configs per function which INputs are triggered by the override trigger button
+uint8_t trigButton;           // Reads DIP values during program to signal the trigger being pressed
+uint8_t trigMask;             // Configs per function which INputs are triggered by the override trigger button
 
-// Initializing motor
+// Initializing TB6612FNG driver and SSD1306 screen
 Output Out1 = Output(AIN1, AIN2, PWMA, 1, STBY);
 Output Out2 = Output(BIN1, BIN2, PWMB, 1, STBY);
+Adafruit_SSD1306 display(128, 64, &Wire, -1);
 
 uint16_t inValue;
 bool in1Active;
@@ -78,20 +102,20 @@ bool trigTriggerUsed = true;
 bool negativeLogic = true; // Default mode is negative logic
 bool runningTimer = false; // Used for e.g. the MonoFlop
 bool Q_FF = false;         // Flipflop output state
-
+uint8_t outValue = 0;      // Generic output value for multiple use
 
 // ----------------------------------------------------------------------------------------------------------------
 
 void setup() {
   if (logging) Serial.begin(38400);
-
+  
   // Init display and draw input-/output boxes...
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
     Serial.println(F("SSD1306 allocation failed"));
     for(;;); // Don't proceed, loop forever
   }
   display.clearDisplay();
-
+  
   // Set pin-modes and read sensor defaults...
   pinMode(IN1, INPUT);
   pinMode(IN2, INPUT);
@@ -127,97 +151,115 @@ void setup() {
       // Basic program negative logic...
       display_function(F("OUT-TOGGLE"));
       trigMask = 1;
-      drawInputOutputBoxes(false); // Two analogue motor bars...
+      drawInputOutputBoxes(false); // Two analogue motor speed bars...
       break;
     case 1: 
       // 1*4 input AND/NAND gate
       display_function(F("1*4 (N)AND"));
       trigMask = 15;
-      drawInputOutputBoxes(true); // Show four digital ouputs...
+      drawInputOutputBoxes(true); // Show four digital ouput boxes...
       break;
     case 2: 
       // 2*2 input AND/NAND gate
       display_function(F("2*2 (N)AND"));
       trigMask = 15;
-      drawInputOutputBoxes(true); // Show four digital ouputs...
+      drawInputOutputBoxes(true); // Show four digital ouput boxes...
       break;
     case 3:  
       // 1*4 input OR/NOR gate
       display_function(F("1*4 (N)OR"));
       trigMask = 15;
-      drawInputOutputBoxes(true); // Show four digital ouputs...
+      drawInputOutputBoxes(true); // Show four digital ouput boxes...
       break;
     case 4:
       // 2*2 input OR/NOR gate
       display_function(F("2*2 (N)OR"));
       trigMask = 15;
-      drawInputOutputBoxes(true); // Show four digital ouputs...
+      drawInputOutputBoxes(true); // Show four digital ouput boxes...
       break;     
     case 5:
       // 1*4 input XOR/XNOR gate
       display_function(F("1*4 X(N)OR"));
       trigMask = 15;
-      drawInputOutputBoxes(true); // Show four digital ouputs...
+      drawInputOutputBoxes(true); // Show four digital ouput boxes...
       break;
     case 6:
       // 2*2 input XOR/XNOR gate
       display_function(F("2*2 X(N)OR"));
       trigMask = 15;
-      drawInputOutputBoxes(true); // Show four digital ouputs...
+      drawInputOutputBoxes(true); // Show four digital ouput boxes...
       break; 
     case 7:
       // SR-flipflop
       display_function(F("SR-FLPFLP"));
       trigMask = 2; // CLK only
-      drawInputOutputBoxes(true); // Show four digital ouputs...
+      drawInputOutputBoxes(true); // Show four digital ouput boxes...
       break;
     case 8:
       // Monoflop configurable pulse time
       trigMask = 2; // EDGE only
       display_function(F("MONOFLOP"));
-      drawInputOutputBoxes(true); // Show four digital ouputs...
+      drawInputOutputBoxes(true); // Show four digital ouput boxes...
       break;   
     case 9:
       // Counter...
       display_function(F("2*COUNTER"));
       trigMask = 15;
-      drawInputOutputBoxes(true); // Show four digital ouputs...
+      drawInputOutputBoxes(true); // Show four digital ouput boxes...
       break;
     case 10:
       // Oscillator...
       display_function(F("PULSE GEN"));
       trigMask = 2;  // EDGE only
-      drawInputOutputBoxes(true); // Show four digital ouputs...
+      drawInputOutputBoxes(true); // Show four digital ouput boxes...
       break;
     case 11:
       display_function(F("SEQUENCE"));
       trigMask = 2;  // EDGE only
-      drawInputOutputBoxes(true); // Show four digital ouputs...
+      drawInputOutputBoxes(true); // Show four digital ouput boxes...
       break;   
-    case 12: 
-      //display_function(F("FUNC 12"));
+    case 12:
+      trigMask = 1;
+#ifdef FUNC12_NUNCHUK
       display_function(F("NUNCHUK"));
-      trigMask = 1;
-      //.drawInputOutputBoxes(true); // Show four digital ouputs...
-      drawInputOutputBoxes(false); // Two analogue motor bars...      
+      drawInputOutputBoxes(false); // Two analogue speed bars...      
       nunchuk.init();
+#else
+      display_function(F("B-DECODE"));
+      trigMask = 1; // CLK
+      drawInputOutputBoxes(true); // Show four digital ouput boxes...
+#endif
       break;
-    case 13: 
-      display_function(F("FUNC 13"));
+    case 13:
       trigMask = 1;
-      drawInputOutputBoxes(true); // Show four digital ouputs...
+      drawInputOutputBoxes(true); // Show four digital ouput boxes...      
+#ifdef FUNC13_COLORSENSOR
+      if (!tcs.begin()) {
+        display_function(F("NO SENSOR"));
+        //Serial.println("NO sensor");
+        display.setTextSize(1);
+        display.setTextColor(WHITE,BLACK);
+        display.setCursor(64-(17*6)/2,13);
+        display.println(F("No TCS34725 found"));
+        display.display();
+        while (1);
+      }
+      display_function(F("RGBY COLOR"));
+#else
+      display_function(F("FUNC 13"));
+#endif
       break;
     case 14:
       // Two speed-regulated motors
       display_function(F("CONTROLLER"));
       trigMask = 2;  // EDGE only
-      drawInputOutputBoxes(false); // Two analogue motor bars...      
+      drawInputOutputBoxes(false); // Two analogue speed bars...      
       break;   
     case 15: 
       // Output/Out demo (optionally connected motors)...
       trigMask = 15;
       display_function(F("MOTOR DEMO"));
-      drawInputOutputBoxes(false); // Two analogue motor bars...
+      drawInputOutputBoxes(false); // Two analogue speed bars...
       break;
   }
   
@@ -308,7 +350,7 @@ void loop() {
 }
 
 void initTresholds() {
-  // Reads potmeters and sets thesholds. Called once each loop(). Any (or both) tresholds may be overloaded by service routines before calling readInputs()
+  // Reads potmeters and sets thesholds. Called once each loop(). Any (or both) tresholds may be overloaded by service routines before calling readShowInputs()
   
   // Read analog potmeter values, used as trigger level, hysteresis and/or time delay or pulse width for functions
   // potValues are global, so functions may use these otherwise as long as sensorTresh1 and sensorTresh2 are sensible overloaded
@@ -318,7 +360,7 @@ void initTresholds() {
   sensorTresh2 = round10(map(potValue2, MINREG, MAXREG, 1, TRESHOLD_MAX));
 }
 
-void readInputs() {
+void readShowInputs() {
   // Reads inputs. Called from the respective service routines...
   // Read inputs. Default: IN1-IN2 use sensorTresh1, IN3-IN4 use sensorTresh2
   inValue = analogRead(IN1);
@@ -381,7 +423,7 @@ void function0() {  // Output/Base program
   timeDelay = round10(map(potValue2, MINREG, MAXREG, 0, DELAY_MAX));
   displayValues(round10(map(potValue1, MINREG, MAXREG, 1, TRESHOLD_MAX)), "P:", "", timeDelay, "", " ms");
   printInputTags("P-CLK", "FRWD", "REV", "");
-  readInputs();
+  readShowInputs();
 
   if (trigActive) // Manual test: set only IN1 to active...
     in1Active = true;
@@ -415,7 +457,7 @@ void function0() {  // Output/Base program
 
 void function1() { // 1*4 input AND/NAND gate
   displayValues(map(potValue1, MINREG, MAXREG, 1, TRESHOLD_MAX), "P1:", "", map(potValue2, MINREG, MAXREG, 1, TRESHOLD_MAX), "P2:", "");
-  readInputs();
+  readShowInputs();
   
   if (trigActive) // Manual test: set all inputs to active...
     in1Active = in2Active = in3Active = in4Active = true;
@@ -427,7 +469,7 @@ void function1() { // 1*4 input AND/NAND gate
 
 void function2() { // 2*2 input AND/NAND gate
   displayValues(map(potValue1, MINREG, MAXREG, 1, TRESHOLD_MAX), "P1:", "", map(potValue2, MINREG, MAXREG, 1, TRESHOLD_MAX), "P2:", "");
-  readInputs();
+  readShowInputs();
   
   if (trigActive) // Manual test: set all inputs to active...
     in1Active = in2Active = in3Active = in4Active = true;
@@ -439,7 +481,7 @@ void function2() { // 2*2 input AND/NAND gate
 
 void function3() { // 1*4 input OR/NOR gate
   displayValues(map(potValue1, MINREG, MAXREG, 1, TRESHOLD_MAX), "P1:", "", map(potValue2, MINREG, MAXREG, 1, TRESHOLD_MAX), "P2:", "");
-  readInputs();
+  readShowInputs();
   
   if (trigActive) // Manual test: set all inputs to active...
     in1Active = in2Active = in3Active = in4Active = true;
@@ -451,7 +493,7 @@ void function3() { // 1*4 input OR/NOR gate
 
 void function4() { // 2*2 input OR/NOR gate
   displayValues(map(potValue1, MINREG, MAXREG, 1, TRESHOLD_MAX), "P1:", "", map(potValue2, MINREG, MAXREG, 1, TRESHOLD_MAX), "P2:", "");
-  readInputs();
+  readShowInputs();
   
   if (trigActive) // Manual test: set all inputs to active...
     in1Active = in2Active = in3Active = in4Active = true;
@@ -463,7 +505,7 @@ void function4() { // 2*2 input OR/NOR gate
 
 void function5() { // 1*4 input XOR/XNOR gate
   displayValues(map(potValue1, MINREG, MAXREG, 1, TRESHOLD_MAX), "P1:", "", map(potValue2, MINREG, MAXREG, 1, TRESHOLD_MAX), "P2:", "");
-  readInputs();
+  readShowInputs();
   
   if (trigActive) // Manual test: set all inputs to active...
     in1Active = in2Active = in3Active = in4Active = true;
@@ -475,7 +517,7 @@ void function5() { // 1*4 input XOR/XNOR gate
 
 void function6() { // 2*2 input XOR/XNOR gate
   displayValues(map(potValue1, MINREG, MAXREG, 1, TRESHOLD_MAX), "P1:", "", map(potValue2, MINREG, MAXREG, 1, TRESHOLD_MAX), "P2:", "");
-  readInputs();
+  readShowInputs();
   
   if (trigActive) // Manual test: set all inputs to active...
     in1Active = in2Active = in3Active = in4Active = true;
@@ -488,7 +530,7 @@ void function6() { // 2*2 input XOR/XNOR gate
 void function7() { // SR-flipflop - SET=IN1, CLK=IN2, RESET=IN3
   printInputTags("SET", "CLK", "RESET", "");
   displayValues(map(potValue1, MINREG, MAXREG, 1, TRESHOLD_MAX), "P1:", "", map(potValue2, MINREG, MAXREG, 1, TRESHOLD_MAX), "P2:", "");
-  readInputs();
+  readShowInputs();
   
   if (!trigTriggerUsed && trigActive) { // Manual trigger: set IN2 (CLK) inputs to active...
     in2Active = true;
@@ -536,7 +578,7 @@ void function8() { // Monoflop configurable pulse length
   timeDelay = round10(map(potValue2, MINREG, MAXREG, 0, DELAY_MAX));
   printInputTags("DSBL", "TRIG", "", "");
   displayValues(potValue1, "P1:", "", timeDelay, "T:", " ms"); // Something else!
-  readInputs();
+  readShowInputs();
   
   if (!trigTriggerUsed && trigActive) { // Manual trigger: set IN2 (TRIG) inputs to active...
     in2Active = true;
@@ -585,7 +627,7 @@ void function9() { // Counter
   while (1) { // For ever...
     displayValues(map(potValue1, MINREG, MAXREG, 1, TRESHOLD_MAX), "P1:", "", map(potValue2, MINREG, MAXREG, 1, TRESHOLD_MAX), "P2:", "");
     initTresholds();
-    readInputs();
+    readShowInputs();
     
     // Count on counter 1...
     if (in1Active && !in1TriggerUsed) {
@@ -649,7 +691,7 @@ void function10() { // Oscillator
     //displayValues(timeDelay, "", " ms", dutyCycle, "Duty ", "%");
     displayValues(timeDelay, "", " ms", periodTime, " ", " ms");
     initTresholds();
-    readInputs();
+    readShowInputs();
     
     if (!trigTriggerUsed && trigActive) { // Manual: set IN2 (TRIG) inputs to active...
       in2Active = true;
@@ -721,7 +763,7 @@ void function11() {
     timeDelay = round10(map(potValue2, MINREG, MAXREG, 0, DELAY_MAX));
     displayValues(potValue1, "P1:", "", timeDelay, "T:", " ms"); // Something else!
     initTresholds();
-    readInputs();
+    readShowInputs();
     
     if (!trigTriggerUsed && trigActive) { // Manual: set IN2 (TRIG) inputs to active...
       in2Active = true;
@@ -774,15 +816,25 @@ void function11() {
   }
 }
 
-void function12() { // Test VL53LOX as other device on the i2C bus...
+#ifdef FUNC12_NUNCHUK
+void function12() { // Test Nunchuk as device on the i2C bus...
   int motorSpeed1, motorSpeed2;
   motorSpeed1 = motorSpeed2 = 0;
-  
+  sensorTresh1 = sensorTresh2 = TRESHOLD_MAX/2; // Use defaults for all inputs...
+
   while (1) { // For ever...
     initTresholds();
-    //readInputs();
+    // Allow manual triggering, but don't use readShowInputs(), 2 inputs are read via I2C...
+    trigButton = readdipSwitches();
+    if (dipSwitches!=15 && trigButton==15) {
+      trigActive = true;
+    } else {
+      trigActive = false;
+      trigTriggerUsed = false;
+    }
+
     nunchuk.update();
-    // Values:
+    // Possible values:
     //   nunchuk.analogX,nunchuk.analogY
     //   nunchuk.accelX, nunchuk.accelY, nunchuk.accelZ
     //   nunchuk.zButton, nunchuk.cButton
@@ -805,19 +857,94 @@ void function12() { // Test VL53LOX as other device on the i2C bus...
       motorSpeed2 = 0;
       Out2.brake();
     }
+
+    // Optionally do something useful with the trigger (IN1), cButton and zButton :-)
     
+    // Show driver outputs...
+    displayValues(motorSpeed1, "M1:", "", motorSpeed2, "M2:", "");
     speedBar(0, (nunchuk.analogX>128), motorSpeed1);      
     speedBar(1, (nunchuk.analogY>128), motorSpeed2);
 
-    // Reflect state of buttons... 
+    // Reflect state of buttons...
+    showInput(0, (bool)trigActive);
     showInput(1, (bool)nunchuk.cButton);
     showInput(2, (bool)nunchuk.zButton);
   }
 }
+#else
+void function12() { // 3 bit binary decoder - IN1=CLK, IN2=bit2, IN3=bit1, IN4=bit0
+  // bit2 is used as !enable: when it is active the output is disabled, so 2 decoders can be contatenated to decode to 8 individual outputs
+  unsigned long pulseStart;
 
-void function13() { // Future ideas...
-  ;
+  sensorTresh2 = sensorTresh1;
+  timeDelay = round10(map(potValue2, MINREG, MAXREG, 0, 1000)); // Max settle time inputs is 1 sec...
+  displayValues(round10(map(potValue1, MINREG, MAXREG, 1, TRESHOLD_MAX)), "P:", "", timeDelay, "", " ms");
+  printInputTags("CLK", "B2", "B1", "B0");
+  readShowInputs();
+
+  if (!in2Active) { // IN2 acts as !enable (carry bit)
+    if (in1Active && !in1TriggerUsed) {
+      in1TriggerUsed = true; // IN1 is edge sensitive CLK...
+      pulseStart = millis(); // Restart pulse timer...
+      runningTimer = true;
+    }
+    if (runningTimer) {
+      if ((millis() - pulseStart) > timeDelay) { // Inputs are stable...
+        runningTimer = false;
+        outValue = (uint8_t)(in3Active*2) + (uint8_t)in4Active;
+      }
+    }
+    digitalOut((outValue==0), (outValue==1), (outValue==2), (outValue==3));
+  } else {
+    digitalOut(false, false, false, false);
+  }
 }
+#endif
+
+#ifdef FUNC13_COLORSENSOR
+void function13() { // TCS34725 color sensor, Red=Q1, Green=Q2, Blue=Q3, Yellow=Q4...
+  // See https://arduino.stackexchange.com/questions/19688/use-adafruit-colorsensor-to-distinguish-between-green-and-red
+  uint16_t red, green, blue, clr;
+    
+  displayValues(map(potValue1, MINREG, MAXREG, 1, TRESHOLD_MAX), "P1:", "", map(potValue2, MINREG, MAXREG, 1, TRESHOLD_MAX), "P2:", "");
+  readShowInputs();
+  
+  tcs.setInterrupt(false);  // turn on LED
+  delay(60);  // takes 50ms to read 
+  tcs.getRawData(&red, &green, &blue, &clr);
+  tcs.setInterrupt(true);  // turn off LED
+    
+  if (compareColor(&colorRed, red, green, blue, clr)) {
+    Serial.println("Red...");
+  }
+  if (compareColor(&colorGreen, red, green, blue, clr)) {
+    Serial.println("Green...");
+  }
+  if (compareColor(&colorBlue, red, green, blue, clr)) {
+    Serial.println("Blue...");
+  }
+  if (compareColor(&colorYellow, red, green, blue, clr)) {
+    Serial.println("Yellow...");
+  }
+  
+  Out1.clear();
+  Out2.clear();
+  digitalOut(
+    compareColor(&colorRed, red, green, blue, clr), 
+    compareColor(&colorGreen, red, green, blue, clr), 
+    compareColor(&colorBlue, red, green, blue, clr), 
+    compareColor(&colorYellow, red, green, blue, clr));
+
+}
+#else
+void function13() { // Future ideas...
+  displayValues(map(potValue1, MINREG, MAXREG, 1, TRESHOLD_MAX), "P1:", "", map(potValue2, MINREG, MAXREG, 1, TRESHOLD_MAX), "P2:", "");
+  readShowInputs();
+  
+  if (trigActive) // Manual test: set all inputs to active...
+    in1Active = in2Active = in3Active = in4Active = true;
+}
+#endif
 
 void function14() { // Two speed-regulated motors
   int motorSpeed1, motorSpeed2;
@@ -832,7 +959,7 @@ void function14() { // Two speed-regulated motors
     // IN3 is rotation direction for Out1, IN4 is rotation direction for Out2
     initTresholds();
     sensorTresh1 = sensorTresh2 = TRESHOLD_MAX/2; // Use defaults for all inputs...
-    readInputs();
+    readShowInputs();
     displayValues(motorSpeed1, "M1:", "", motorSpeed2, "M2:", "");
 
     if (!trigTriggerUsed && trigActive) { // Manual: set IN2 (TRIG) inputs to active...
@@ -940,36 +1067,53 @@ unsigned long round10(unsigned long n) {
 }
 
 void digitalOut(bool DigitalOut1, bool DigitalOut2, bool DigitalOut3, bool DigitalOut4) {
-  // Because the digital outputs are inverted/buffered AIN1(=Out1), AIN2(=Out2), BIN2(=Out3) and BIN1(=Out3) lines, this also sets 
-  // Motor/analog output OUT1 reflects the state of DigitalOut1, motor/analog output OUT2 reflects the state of DigitalOut3
+  // Because the digital outputs are inverted/buffered AIN1(=Out1), AIN2(=Out2), BIN2(=Out3) and BIN1(=Out4) lines, this also sets 
+  // Motor/analog output OUT1 reflects the state of DigitalOut1, motor/analog output OUT2 reflects the state of DigitalOut4
 
-  if ( ( DigitalOut1 &&  negativeLogic) ||
-       (!DigitalOut1 && !negativeLogic) )
-    Out1.set(-MAX_VALUE);
-  else
-    Out1.set(MAX_VALUE);
-
-  if ( ( DigitalOut3 &&  negativeLogic) ||
-       (!DigitalOut3 && !negativeLogic) )
-    Out2.set(-MAX_VALUE);
-  else
-    Out2.set(MAX_VALUE);
-
-  if (!DigitalOut1 && !DigitalOut2) {
+  if (!DigitalOut1 && !DigitalOut2) { // Both LOW...
     if (negativeLogic)
-      Out1.brake();
-    else
       Out1.clear();
+    else
+      Out1.brake();
+  } else {
+    if (DigitalOut1 && DigitalOut2) { // Both HIGH...
+      if (negativeLogic)
+        Out1.brake();
+      else
+        Out1.clear();
+    } else { // Signals differ...
+      if (!DigitalOut1 && !negativeLogic ||
+           DigitalOut1 && negativeLogic) {
+        Out1.set(MAX_VALUE);
+      } else {
+        Out1.set(-MAX_VALUE);
+      }
+    }
   }
+
+  if (!DigitalOut3 && !DigitalOut4) { // Both LOW...
+    if (negativeLogic)
+      Out2.clear();
+    else
+      Out2.brake();
+  } else {
+    if (DigitalOut3 && DigitalOut4) { // Both HIGH...
+      if (negativeLogic)
+        Out2.brake();
+      else
+        Out2.clear();
+    } else { // Signals differ...
+      if (!DigitalOut3 && !negativeLogic ||
+           DigitalOut3 && negativeLogic) {
+        Out2.set(MAX_VALUE);
+      } else {
+        Out2.set(-MAX_VALUE);
+      }
+    }
+  }
+
   showOutput(0, DigitalOut1);
   showOutput(1, DigitalOut2);
-
-  if (!DigitalOut3 && !DigitalOut4) {
-    if (negativeLogic)
-      Out2.brake();
-    else
-      Out2.clear();
-  }
   showOutput(2, DigitalOut3);
   showOutput(3, DigitalOut4);
 }
@@ -1010,6 +1154,7 @@ void showInput(uint8_t inputNr, bool showState) {
 void showOutput(uint8_t outputNr, bool showState) {
   // Draws solid boxes at bottom of screen. Input: outputNr is 0 based, so either 0, 1, 2 or 3
   display.fillRect(2+(outputNr*32), 55, 28, 8, (showState)?WHITE:BLACK);
+  display.display();
 }
 
 void speedBar(uint8_t outputNr, bool direction, int showValue) {
@@ -1121,7 +1266,7 @@ void setMotorSpeedFunction0(bool rotateDir, int motorSpeed, bool smooth) { // ON
           readDelayFunction0();
           delay(timeDelay/25);
           setSpeedFunction0(rotateDir, tempSpeed);
-          readInputs();
+          readShowInputs();
         }       
       }
     }
@@ -1133,7 +1278,7 @@ void setMotorSpeedFunction0(bool rotateDir, int motorSpeed, bool smooth) { // ON
 void readDelayFunction0() {
   initTresholds();
   sensorTresh2 = sensorTresh1; // Use tresh1 for all inputs...
-  readInputs();
+  readShowInputs();
   timeDelay = round10(map(potValue2, MINREG, MAXREG, 0, DELAY_MAX));
   displayValues(round10(map(potValue1, MINREG, MAXREG, 1, TRESHOLD_MAX)), "P:", "", timeDelay, "", " ms");
 }
@@ -1144,3 +1289,41 @@ void setSpeedFunction0(bool rotateDir, int motorSpeed) {
   speedBar(0, rotateDir, abs(motorSpeed));
   speedBar(1, !rotateDir, abs(motorSpeed));   
 }
+
+#ifdef FUNC13_COLORSENSOR
+boolean compareColor(Color *std, int r, int g, int b, int c) {
+
+  //Serial.print(F("RED "));
+  //Serial.print(std->red);
+  //Serial.print(F("-"));
+  //Serial.print(r);
+  //Serial.print(F("/"));
+  //Serial.print(abs(r - std->red));
+  //Serial.print(F(" GREEN "));
+  //Serial.print(std->green);
+  //Serial.print(F("-"));
+  //Serial.print(g);  
+  //Serial.print(F("/"));
+  //Serial.print(abs(g - std->green));
+  //Serial.print(F(" BLUE "));
+  //Serial.print(std->blue);
+  //Serial.print(F("-"));
+  //Serial.print(b);  
+  //Serial.print(F("/"));
+  //Serial.print(abs(b - std->blue));
+  //Serial.print(F(" CLR "));
+  //Serial.print(std->clr);
+  //Serial.print(F("-"));
+  //Serial.print(c);  
+  //Serial.print(F("/"));
+  //Serial.println(abs(c - std->clr));
+ 
+  if ( (abs(r - std->red) <= MAX_COLOR_OFFSET) &&
+       (abs(g - std->green) <= MAX_COLOR_OFFSET) &&
+       (abs(b - std->blue) <= MAX_COLOR_OFFSET) &&
+       (abs(c - std->clr) <= MAX_COLOR_OFFSET) ) {
+    return true;
+  }
+  return false;
+}
+#endif
